@@ -1,0 +1,68 @@
+[
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=eporner.com&sz=%size%",
+        "jarFileSize": 120653,
+        "fileHash": "sha256-1164292ae5a582959679ceee24b62d651568ea54b6ced6966dd78079462f3556",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/just-random-1965/extensions",
+        "fileSize": 25838,
+        "status": 1,
+        "authors": [
+            "your-username"
+        ],
+        "tvTypes": [
+            "Others"
+        ],
+        "version": 1,
+        "internalName": "EpornerProvider",
+        "jarUrl": "https://raw.githubusercontent.com/just-random-1965/extensions/builds/EpornerProvider.jar",
+        "description": "Watch content from eporner.com",
+        "url": "https://raw.githubusercontent.com/just-random-1965/extensions/builds/EpornerProvider.cs3",
+        "name": "EpornerProvider",
+        "jarHash": "sha256-e212b81c087ed0386f53514697e7ed5c8b8788622558477c04ad0ce26b9bca58"
+    },
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=naijatape.com&sz=%size%",
+        "jarFileSize": 80927,
+        "fileHash": "sha256-b8f27b325d6ee84270f1faec4b7429d0b445229a82f19f2cd75a396623746450",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/just-random-1965/extensions",
+        "fileSize": 18157,
+        "status": 1,
+        "authors": [
+            "snowballons"
+        ],
+        "tvTypes": [
+            "Others"
+        ],
+        "version": 1,
+        "internalName": "NaijaTapeProvider",
+        "jarUrl": "https://raw.githubusercontent.com/just-random-1965/extensions/builds/NaijaTapeProvider.jar",
+        "description": "Watch content from NaijaTape.com",
+        "url": "https://raw.githubusercontent.com/just-random-1965/extensions/builds/NaijaTapeProvider.cs3",
+        "name": "NaijaTapeProvider",
+        "jarHash": "sha256-67d6583493dcd10cd6be9cafbfb68366b7210fc694364de8afddb22845fa6211"
+    },
+    {
+        "iconUrl": "https://www.google.com/s2/favicons?domain=shesfreaky.com&sz=%size%",
+        "jarFileSize": 154854,
+        "fileHash": "sha256-69f54ac3ae1207ebcdcbe509f82d00fbf2c07e7ca98a4699be5a0e2fc04eff6b",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/just-random-1965/extensions",
+        "fileSize": 30255,
+        "status": 1,
+        "authors": [
+            "your-username"
+        ],
+        "tvTypes": [
+            "Others"
+        ],
+        "version": 1,
+        "internalName": "SheFreakyProvider",
+        "jarUrl": "https://raw.githubusercontent.com/just-random-1965/extensions/builds/SheFreakyProvider.jar",
+        "description": "Watch content from shesfreaky.com",
+        "url": "https://raw.githubusercontent.com/just-random-1965/extensions/builds/SheFreakyProvider.cs3",
+        "name": "SheFreakyProvider",
+        "jarHash": "sha256-658793403a4a2f19e130bc0f581f6d3ba1ab022e11ba7196e2b86b4b6e377590"
+    }
+]
