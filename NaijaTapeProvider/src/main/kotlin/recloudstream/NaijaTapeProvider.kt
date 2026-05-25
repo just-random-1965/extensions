@@ -29,7 +29,7 @@ class NaijaTapeProvider : MainAPI() {
     override var lang = "en"
     override val hasMainPage = true
 
-    private fun apiGet(path: String): String {
+    private suspend fun apiGet(path: String): String {
         return app.get("$mainUrl$path").text
     }
 
