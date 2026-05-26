@@ -9,12 +9,12 @@ import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.Tag
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.toNewSearchResponseList
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -28,7 +28,6 @@ class SheFreakyProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Others)
     override var lang = "en"
     override val hasMainPage = true
-    override val hasSearchSupport = true
 
     private suspend fun apiGet(path: String): String {
         return app.get("$mainUrl$path").text
@@ -96,15 +95,15 @@ class SheFreakyProvider : MainAPI() {
         return newHomePageResponse(sections)
     }
 
+    override suspend fun search(query: String): SearchResponseList? {
+        return search(query, 1)
+    }
+
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         val json = apiGet("/search?q=${query.encodeUri()}&type=videos&page=$page")
         val resp = tryParseJson<ApiSearchResponse>(json) ?: return null
         if (!resp.success) return null
-        val items = resp.items?.map { it.toSearchResponse(this) } ?: emptyList()
-        return newMovieSearchResponse(query, items) {
-            this.page = page
-            this.totalPages = resp.totalPages
-        }
+        return resp.items?.map { it.toSearchResponse(this) }?.toNewSearchResponseList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -142,9 +141,7 @@ class SheFreakyProvider : MainAPI() {
                 }
                 detail.uploader?.let { append("Uploader: ${it["username"]}\n") }
             }.ifBlank { null }
-            detail.tags?.let { tags = it.map { t -> Tag(text = t) } }
-            detail.views?.let { addActors(listOf("Views: $it")) }
-            detail.duration?.let { addDuration(it) }
+            detail.tags?.let { tags = it }
             detail.date?.let { year = it.takeLast(4).toIntOrNull() }
         }
     }
@@ -170,8 +167,7 @@ class SheFreakyProvider : MainAPI() {
                 }
                 append("${detail.photoCount ?: imageUrls.size} images")
             }
-            detail.tags?.let { tags = it.map { t -> Tag(text = t) } }
-            detail.views?.let { addActors(listOf("Views: $it")) }
+            detail.tags?.let { tags = it }
             detail.date?.let { year = it.takeLast(4).toIntOrNull() }
         }
     }
@@ -205,7 +201,6 @@ class SheFreakyProvider : MainAPI() {
                     ) {
                         quality = Qualities.Unknown.value
                         referer = ""
-                        isM3u8 = false
                     }
                 )
             }
@@ -249,7 +244,6 @@ class SheFreakyProvider : MainAPI() {
                 TvType.Others
             ) {
                 this.posterUrl = posterFix
-                if (duration != null) addDuration(duration)
             }
         }
     }
