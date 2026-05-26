@@ -95,10 +95,6 @@ class SheFreakyProvider : MainAPI() {
         return newHomePageResponse(sections)
     }
 
-    override suspend fun search(query: String): SearchResponseList? {
-        return search(query, 1)
-    }
-
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         val json = apiGet("/search?q=${query.encodeUri()}&type=videos&page=$page")
         val resp = tryParseJson<ApiSearchResponse>(json) ?: return null
@@ -125,13 +121,11 @@ class SheFreakyProvider : MainAPI() {
         if (!detail.success) return null
         if (detail.videoUrl == null) return null
 
-        val dataJson = detail.videoUrl!!.toJson()
-
         return newMovieLoadResponse(
             detail.title?.ifEmpty { "Video #$videoId" } ?: "Video #$videoId",
             url,
             TvType.Others,
-            dataJson
+            listOf(detail.videoUrl!!)
         ) {
             posterUrl = detail.thumbnail
             plot = buildString {
@@ -152,13 +146,12 @@ class SheFreakyProvider : MainAPI() {
         if (!detail.success) return null
 
         val imageUrls = detail.images ?: emptyList()
-        val dataJson = imageUrls.toJson()
 
         return newMovieLoadResponse(
             detail.title?.ifEmpty { "Gallery #$galleryId" } ?: "Gallery #$galleryId",
             url,
             TvType.Others,
-            dataJson
+            imageUrls
         ) {
             posterUrl = detail.thumbnails?.firstOrNull()
             plot = buildString {
@@ -178,36 +171,17 @@ class SheFreakyProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val singleUrl = tryParseJson<String>(data)
-        if (singleUrl != null) {
+        val urls = tryParseJson<List<String>>(data) ?: return false
+        val isVideo = urls.size == 1
+        urls.forEachIndexed { index, url ->
             callback(
-                newExtractorLink(name, "Video", singleUrl) {
+                newExtractorLink(name, if (isVideo) "Video" else "Image ${index + 1}", url) {
                     quality = Qualities.Unknown.value
                     referer = ""
                 }
             )
-            return true
         }
-
-        val imageUrls = tryParseJson<List<String>>(data)
-        if (imageUrls != null && imageUrls.isNotEmpty()) {
-            val isVideo = imageUrls.size == 1 && imageUrls[0].contains(".mp4")
-            imageUrls.forEachIndexed { index, imgUrl ->
-                callback(
-                    newExtractorLink(
-                        name,
-                        if (isVideo) "Video" else "Image ${index + 1}",
-                        imgUrl
-                    ) {
-                        quality = Qualities.Unknown.value
-                        referer = ""
-                    }
-                )
-            }
-            return true
-        }
-
-        return false
+        return true
     }
 
     private suspend fun getChannels(): List<ApiChannel> {
