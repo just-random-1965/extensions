@@ -23,7 +23,7 @@ import com.lagradost.cloudstream3.utils.StringUtils.encodeUri
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class SheFreakyProvider : MainAPI() {
-    override var mainUrl = "https://she-api.vercel.app/api"
+    override var mainUrl = "https://shesfreaky.netlify.app/api"
     override var name = "She's Freaky"
     override val supportedTypes = setOf(TvType.Others)
     override var lang = "en"

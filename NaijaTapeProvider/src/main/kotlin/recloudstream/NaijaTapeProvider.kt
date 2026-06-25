@@ -23,7 +23,7 @@ import com.lagradost.cloudstream3.utils.StringUtils.encodeUri
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class NaijaTapeProvider : MainAPI() {
-    override var mainUrl = "https://naija-blfikyfyb-snowballons-project.vercel.app/api"
+    override var mainUrl = "https://ntape.netlify.app/api"
     override var name = "NaijaTape"
     override val supportedTypes = setOf(TvType.Others, TvType.Movie)
     override var lang = "en"
