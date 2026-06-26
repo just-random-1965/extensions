@@ -125,7 +125,7 @@ class SheFreakyProvider : MainAPI() {
             detail.title?.ifEmpty { "Video #$videoId" } ?: "Video #$videoId",
             url,
             TvType.Others,
-            listOf(detail.videoUrl!!)
+            listOf(detail.videoUrl)
         ) {
             posterUrl = detail.thumbnail
             plot = buildString {

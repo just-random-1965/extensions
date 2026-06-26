@@ -169,11 +169,11 @@ class EpornerProvider : MainAPI() {
         sources.forEach { source ->
             val qualityLabel = source.quality ?: "Video"
             val qualityValue = when {
-                source.height != null && source.height >= 2160 -> Qualities.FourK.value
-                source.height != null && source.height >= 1080 -> Qualities.VeryHigh.value
-                source.height != null && source.height >= 720 -> Qualities.High.value
-                source.height != null && source.height >= 480 -> Qualities.Medium.value
-                source.height != null && source.height >= 360 -> Qualities.Low.value
+                source.height != null && source.height >= 2160 -> Qualities.P2160.value
+                source.height != null && source.height >= 1080 -> Qualities.P1080.value
+                source.height != null && source.height >= 720 -> Qualities.P720.value
+                source.height != null && source.height >= 480 -> Qualities.P480.value
+                source.height != null && source.height >= 360 -> Qualities.P360.value
                 else -> Qualities.Unknown.value
             }
 
