@@ -42,7 +42,7 @@ class NaijaTapeProvider : MainAPI() {
                 val resp = httpClient.newCall(req).execute()
                 if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
                 val body = resp.body?.string() ?: throw Exception("Empty body")
-                resp.closeSilently()
+                resp.use { }
                 return body
             } catch (e: Exception) {
                 lastErr = e
@@ -142,7 +142,7 @@ class NaijaTapeProvider : MainAPI() {
         val categories = doc.select(".cat-links a, .category a, .post-categories a")
             .map { it.text().trim() }
             .filter { it.isNotEmpty() }
-            .distinct()
+            .toMutableSet()
 
         val articleEl = doc.select("article").first()
         if (articleEl != null) {
@@ -156,7 +156,7 @@ class NaijaTapeProvider : MainAPI() {
         val tags = doc.select(".tag-links a, .tags a, .post-tags a")
             .map { it.text().trim() }
             .filter { it.isNotEmpty() }
-            .distinct()
+            .toMutableSet()
 
         if (articleEl != null) {
             val articleClass = articleEl.attr("class")
@@ -173,8 +173,8 @@ class NaijaTapeProvider : MainAPI() {
             date = date,
             videoUrls = videoUrls.toList(),
             images = images.toList(),
-            categories = categories,
-            tags = tags,
+            categories = categories.toList(),
+            tags = tags.toList(),
         )
     }
 

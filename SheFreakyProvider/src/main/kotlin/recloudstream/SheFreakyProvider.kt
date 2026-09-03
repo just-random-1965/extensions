@@ -48,7 +48,7 @@ class SheFreakyProvider : MainAPI() {
                 val resp = httpClient.newCall(req).execute()
                 if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
                 val body = resp.body?.string() ?: throw Exception("Empty body")
-                resp.closeSilently()
+                resp.use { }
                 return body
             } catch (e: Exception) {
                 lastErr = e
