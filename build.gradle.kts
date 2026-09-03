@@ -5,10 +5,10 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 buildscript {
     repositories {
+        maven("https://jitpack.io")
         google()
         mavenCentral()
         // Shitpack repo which contains our tools and dependencies
-        maven("https://jitpack.io")
     }
 
     dependencies {
