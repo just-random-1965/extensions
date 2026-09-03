@@ -8,6 +8,12 @@ buildscript {
         google()
         mavenCentral()
         maven("https://jitpack.io")
+        maven("https://maven.pkg.github.com/recloudstream/gradle") {
+            credentials {
+                username = System.getenv("GH_PACKAGE_USER") ?: "recloudstream"
+                password = System.getenv("GH_PACKAGE_TOKEN") ?: System.getenv("GITHUB_TOKEN") ?: ""
+            }
+        }
     }
 
     dependencies {
@@ -22,6 +28,12 @@ allprojects {
         google()
         mavenCentral()
         maven("https://jitpack.io")
+        maven("https://maven.pkg.github.com/recloudstream/gradle") {
+            credentials {
+                username = System.getenv("GH_PACKAGE_USER") ?: "recloudstream"
+                password = System.getenv("GH_PACKAGE_TOKEN") ?: System.getenv("GITHUB_TOKEN") ?: ""
+            }
+        }
     }
 }
 
