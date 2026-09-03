@@ -1,169 +1,555 @@
 package recloudstream
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.HomePageList
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SearchResponseList
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.toNewSearchResponseList
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import org.jsoup.Jsoup
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.StringUtils.encodeUri
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.jsoup.nodes.Element
+
 
 class SheFreakyProvider : MainAPI() {
-    override var mainUrl = "https://shesfreaky.netlify.app/api"
+    override var mainUrl = "https://www.shesfreaky.com"
     override var name = "She's Freaky"
     override val supportedTypes = setOf(TvType.Others)
     override var lang = "en"
     override val hasMainPage = true
 
-    private suspend fun apiGet(path: String): String {
-        return app.get("$mainUrl$path").text
+    companion object {
+        const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     }
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    private fun normalizeUrl(url: String): String {
+        if (url.isEmpty()) return ""
+        return if (url.startsWith("//")) "https:$url" else url
+    }
+
+    private suspend fun getHtml(path: String, retries: Int = 2): String {
+        val url = "$mainUrl/${path.removePrefix("/")}"
+        var lastErr: Exception? = null
+        for (attempt in 0..retries) {
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Referer", mainUrl)
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .get()
+                    .build()
+                val resp = withContext(Dispatchers.IO) { httpClient.newCall(req).execute() }
+                if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
+                val body = resp.body?.string() ?: throw Exception("Empty body")
+                resp.closeSilently()
+                return body
+            } catch (e: Exception) {
+                lastErr = e
+                if (attempt < retries) Thread.sleep(1000L * (attempt + 1))
+            }
+        }
+        throw lastErr ?: Exception("Unknown error")
+    }
+
+    // ─── Parsing Helpers ─────────────────────────────────────────────────────
+
+    private fun parseListItem(el: Element): ListItem? {
+        val link = el.select("a").first() ?: return null
+        val href = link.attr("href").trim()
+        if (href.isEmpty()) return null
+
+        val videoMatch = Regex("/video/(.+)-(\\d+)\\.html").find(href)
+        val galleryMatch = Regex("/gallery/(.+)-(\\d+)\\.html").find(href)
+
+        if (videoMatch == null && galleryMatch == null) return null
+
+        val type = if (videoMatch != null) "video" else "gallery"
+        val id = (videoMatch ?: galleryMatch!!).groups[2]!!.value.toIntOrNull() ?: return null
+        val slug = (videoMatch ?: galleryMatch!!).groups[1]!!.value
+
+        val title = el.select(".item-title, .title, h2, h3").first()?.text()?.trim()
+            ?: el.select("img").first()?.attr("alt")?.trim() ?: ""
+
+        val thumbRaw = el.select(".thumb img, img").first()
+            ?.attr("src")
+            ?.takeIf { it.isNotEmpty() }
+            ?: el.select(".thumb img").first()?.attr("data-src")
+            ?.takeIf { it.isNotEmpty() }
+        val thumbnail = thumbRaw?.let { normalizeUrl(it) }
+
+        val previewUrl = el.select("[data-preview]").first()?.attr("data-preview")
+            ?.takeIf { it.isNotEmpty() }
+
+        val duration = el.select(".thumb-length, .video-duration, .duration").first()?.text()?.trim()
+        val views = el.select(".video-views, .thumb-views, [class*=views]").first()?.text()?.trim()
+
+        val photoCountText = el.select(".thumb-count, .photo-count").first()?.text()?.trim()
+        val photoCountMatch = photoCountText?.let { Regex("(\\d+)").find(it) }
+        val photoCount = photoCountMatch?.groups?.get(1)?.value?.toIntOrNull()
+
+        return ListItem(
+            id = id,
+            slug = slug,
+            title = title,
+            type = type,
+            thumbnail = thumbnail,
+            previewUrl = previewUrl,
+            duration = duration,
+            views = views,
+            photoCount = photoCount,
+            url = href,
+        )
+    }
+
+    private fun parseListingPage(html: String): List<ListItem> {
+        val doc = Jsoup.parse(html)
+        val items = mutableListOf<ListItem>()
+        doc.select(".item").forEach { el ->
+            if (el.select("a[href*=video], a[href*=gallery]").isNotEmpty()) {
+                val item = parseListItem(el)
+                if (item != null) items.add(item)
+            }
+        }
+        return items
+    }
+
+    private fun parseTotalPages(html: String): Int {
+        val doc = Jsoup.parse(html)
+        var maxPage = 1
+        doc.select(".pagination a, .page-nav a, .pages a, a[href*=page]").forEach { el ->
+            val href = el.attr("href").trim()
+            val match = Regex("page(\\d+)\\.html").find(href)
+            if (match != null) {
+                val num = match.groups[1]!!.value.toIntOrNull()
+                if (num != null && num > maxPage) maxPage = num
+            }
+            val text = el.text().trim()
+            val textMatch = Regex("(\\d+)").find(text)
+            if (textMatch != null) {
+                val num = textMatch.groups[1]!!.value.toIntOrNull()
+                if (num != null && num > maxPage) maxPage = num
+            }
+        }
+        return maxPage
+    }
+
+    private fun parseVideoDetail(html: String, id: Int): VideoDetail? {
+        val doc = Jsoup.parse(html)
+
+        val title = doc.select("h2, h1").first()?.text()?.trim() ?: ""
+
+        val canonical = doc.select("link[rel=canonical]").first()?.attr("href") ?: ""
+        val urlMatch = Regex("/video/(.+)-(\\d+)\\.html").find(canonical)
+        var slug = urlMatch?.groups?.get(1)?.value ?: ""
+        if (slug.isEmpty()) {
+            val pageTitle = doc.title().trim()
+            val slugMatch = Regex("^(.+?)\\s*-\\s*ShesFreaky").find(pageTitle)
+            if (slugMatch != null) {
+                slug = slugMatch.groups[1]!!.value.trim()
+                    .replace("\\s+".toRegex(), "-")
+                    .lowercase()
+            }
+        }
+
+        // Extract video URL
+        var videoUrl: String? = doc.select("video#video-id source[src], video source[src], video[src]").first()?.attr("src")
+        if (videoUrl.isNullOrEmpty()) {
+            videoUrl = doc.select("[data-preview]").first()?.attr("data-preview")
+        }
+        if (videoUrl.isNullOrEmpty()) {
+            doc.select("script").forEach { script ->
+                val text = script.data() ?: return@forEach
+                val match = Regex("""src['"\s:]+\s*['"]([^"']+\.mp4[^"']*)['"]""").find(text)
+                if (match != null) {
+                    videoUrl = match.groups[1]!!.value.replace("\\\\/", "/")
+                    return@forEach
+                }
+            }
+        }
+
+        // Extract thumbnail
+        var thumbnail: String? = doc.select("video#video-id, video").first()?.attr("poster")
+            ?: doc.select("meta[property=og:image]").first()?.attr("content")
+        if (thumbnail.isNullOrEmpty()) {
+            val thumbSrc = doc.select("#content-thumbs img").first()?.attr("src")
+            if (!thumbSrc.isNullOrEmpty()) thumbnail = normalizeUrl(thumbSrc)
+        }
+
+        val contentMain = doc.select("#content-main").first()
+        val contentText = contentMain?.text() ?: ""
+
+        var duration = doc.select(".thumb-length, .video-duration, .duration").first()?.text()?.trim()
+        var views = doc.select(".video-views, .thumb-views, [class*=views]").first()?.text()?.trim()
+        var date = doc.select(".video-date, .gallery-date, .date, .post-date").first()?.text()?.trim()
+
+        doc.select("h2 + p, h2 ~ p").first()?.let { metaP ->
+            val metaHtml = metaP.html() ?: ""
+            if (duration.isNullOrEmpty()) {
+                val clockMatch = Regex("fa-clock[^<]*</i>\\s*([\\d:]+)").find(metaHtml)
+                if (clockMatch != null) duration = clockMatch.groups[1]!!.value.trim()
+            }
+            if (views.isNullOrEmpty()) {
+                val eyeMatch = Regex("fa-eye[^<]*</i>\\s*([\\d,.KkMmbBvViwW]+)").find(metaHtml)
+                if (eyeMatch != null) views = eyeMatch.groups[1]!!.value.trim()
+            }
+            if (date.isNullOrEmpty()) {
+                val calMatch = Regex("fa-calendar[^<]*</i>\\s*([\\d-]+)").find(metaHtml)
+                if (calMatch != null) date = calMatch.groups[1]!!.value.trim()
+            }
+        }
+
+        if (duration.isNullOrEmpty()) {
+            val durMatch = Regex("(\\d+:\\d+)").find(contentText)
+            if (durMatch != null) duration = durMatch.groups[1]!!.value
+        }
+
+        val rating = doc.select(".video-rating, .rating").first()?.text()?.trim()
+            ?: doc.select("#rating-thumbs .btn-success").first()?.text()?.trim()
+
+        val description = Regex("Description:\\s*([^<]+)").find(contentText)?.groups?.get(1)?.value?.trim()
+            ?: doc.select(".description, .video-description, .entry-content").first()?.text()?.trim()
+            ?: ""
+
+        val categories = mutableListOf<CategoryInfo>()
+        doc.select(".categories a, .channels a, [class*=category] a, [class*=channel] a, #content-main a[href*=channels]").forEach { a ->
+            val href = a.attr("href").trim()
+            val name = a.text().trim()
+            val chMatch = Regex("/channels/(\\d+)/([^/]+)/").find(href)
+            if (chMatch != null && name.isNotEmpty()) {
+                categories.add(CategoryInfo(
+                    id = chMatch.groups[1]!!.value.toIntOrNull() ?: 0,
+                    name = name,
+                    slug = chMatch.groups[2]!!.value,
+                    url = href,
+                ))
+            }
+        }
+
+        val tags = mutableListOf<String>()
+        doc.select(".tags a, [class*=tag] a, #content-main a[href*=search]").forEach { a ->
+            val name = a.text().trim().lowercase()
+            if (name.isNotEmpty() && !name.contains("+") && !name.startsWith("suggest")) {
+                tags.add(name)
+            }
+        }
+
+        val uploader: UploaderInfo?
+        val uploaderLink = doc.select(".uploader a, .profile a, .member a, a.redlinks[href*=profile]").first()
+        val uploaderImg = doc.select(".uploader img, .profile img, .member img").first()
+        uploader = if (uploaderLink != null) {
+            UploaderInfo(
+                username = uploaderLink.text().trim(),
+                profileUrl = uploaderLink.attr("href").trim(),
+                avatar = uploaderImg?.attr("src").takeIf { it.isNotEmpty() },
+            )
+        } else null
+
+        return VideoDetail(
+            id = id,
+            slug = slug,
+            title = title,
+            description = description,
+            thumbnail = thumbnail?.let { normalizeUrl(it) },
+            videoUrl = videoUrl,
+            duration = duration,
+            views = views,
+            rating = rating,
+            date = date,
+            categories = categories,
+            tags = tags,
+            uploader = uploader,
+        )
+    }
+
+    private fun parseGalleryDetail(html: String, id: Int): GalleryDetail? {
+        val doc = Jsoup.parse(html)
+
+        val title = doc.select("h2, h1").first()?.text()?.trim() ?: ""
+
+        val canonical = doc.select("link[rel=canonical]").first()?.attr("href") ?: ""
+        val urlMatch = Regex("/gallery/(.+)-(\\d+)\\.html").find(canonical)
+        var slug = urlMatch?.groups?.get(1)?.value ?: ""
+        if (slug.isEmpty()) {
+            val pageTitle = doc.title().trim()
+            val slugMatch = Regex("^(.+?)\\s*-\\s*ShesFreaky").find(pageTitle)
+            if (slugMatch != null) {
+                slug = slugMatch.groups[1]!!.value.trim()
+                    .replace("\\s+".toRegex(), "-")
+                    .lowercase()
+            }
+        }
+
+        val images = mutableListOf<String>()
+        val thumbnails = mutableListOf<String>()
+
+        doc.select(".gallery-images a, .gallery-item a, #gallery-container a[href*=galleries], a[href*=galleries]").forEach { a ->
+            val href = a.attr("href").trim()
+            val thumb = a.select("img").first()?.attr("src") ?: ""
+            if (href.contains("/galleries/")) {
+                images.add(normalizeUrl(href))
+                if (thumb.isNotEmpty()) thumbnails.add(normalizeUrl(thumb))
+            }
+        }
+
+        if (images.isEmpty()) {
+            doc.select("#gallery-container img[src*=galleries], img[src*=galleries]").forEach { el ->
+                val src = el.attr("src").takeIf { it.isNotEmpty() } ?: el.attr("data-src") ?: return@forEach
+                if (src.contains("/galleries/") && !src.contains("/thumbs/")) {
+                    images.add(normalizeUrl(src))
+                }
+                val thumb = el.attr("src")
+                if (thumb.isNotEmpty() && thumb.contains("/galleries/") && thumb.contains("/thumbs/")) {
+                    thumbnails.add(normalizeUrl(thumb))
+                }
+            }
+        }
+
+        if (images.isEmpty() && thumbnails.isNotEmpty()) {
+            thumbnails.forEach { t -> images.add(t.replace("/thumbs/", "/")) }
+        }
+
+        val uniqueImages = images.distinct()
+        val uniqueThumbnails = thumbnails.distinct()
+
+        val photoCountText = doc.select(".thumb-count, .photo-count, .gallery-count").first()?.text()?.trim()
+        val countMatch = photoCountText?.let { Regex("(\\d+)").find(it) }
+        val photoCount = countMatch?.groups?.get(1)?.value?.toIntOrNull() ?: uniqueImages.size
+
+        var views = doc.select(".video-views, .thumb-views, [class*=views]").first()?.text()?.trim()
+        var date = doc.select(".video-date, .gallery-date, .date, .post-date").first()?.text()?.trim()
+
+        doc.select("h2 + p, h2 ~ p").first()?.let { metaP ->
+            val metaHtml = metaP.html() ?: ""
+            if (views.isNullOrEmpty()) {
+                val eyeMatch = Regex("fa-eye[^<]*</i>\\s*([\\d,.KkMmbBvViwW]+)").find(metaHtml)
+                if (eyeMatch != null) views = eyeMatch.groups[1]!!.value.trim()
+            }
+            if (date.isNullOrEmpty()) {
+                val calMatch = Regex("fa-calendar[^<]*</i>\\s*([\\d-]+)").find(metaHtml)
+                if (calMatch != null) date = calMatch.groups[1]!!.value.trim()
+            }
+        }
+
+        val categories = mutableListOf<CategoryInfo>()
+        doc.select(".categories a, .channels a, [class*=category] a, [class*=channel] a, #content-main a[href*=channels]").forEach { a ->
+            val href = a.attr("href").trim()
+            val name = a.text().trim()
+            val chMatch = Regex("/channels/(\\d+)/([^/]+)/").find(href)
+            if (chMatch != null && name.isNotEmpty()) {
+                categories.add(CategoryInfo(
+                    id = chMatch.groups[1]!!.value.toIntOrNull() ?: 0,
+                    name = name,
+                    slug = chMatch.groups[2]!!.value,
+                ))
+            }
+        }
+
+        val tags = mutableListOf<String>()
+        doc.select(".tags a, [class*=tag] a, #content-main a[href*=search]").forEach { a ->
+            val name = a.text().trim().lowercase()
+            if (name.isNotEmpty() && !name.contains("+") && !name.startsWith("suggest")) {
+                tags.add(name)
+            }
+        }
+
+        return GalleryDetail(
+            id = id,
+            slug = slug,
+            title = title,
+            views = views,
+            date = date,
+            photoCount = photoCount,
+            images = uniqueImages,
+            thumbnails = uniqueThumbnails,
+            categories = categories,
+            tags = tags,
+        )
+    }
+
+    private fun parseChannels(html: String): List<Channel> {
+        val doc = Jsoup.parse(html)
+        val channels = mutableListOf<Channel>()
+        val seen = mutableSetOf<Int>()
+        doc.select("a[href*=channels]").forEach { a ->
+            val href = a.attr("href").trim()
+            val name = a.text().trim()
+            val match = Regex("/channels/(\\d+)/([^/]+)/").find(href)
+            if (match != null && name.isNotEmpty()) {
+                val id = match.groups[1]!!.value.toIntOrNull() ?: return@forEach
+                if (!seen.contains(id)) {
+                    seen.add(id)
+                    channels.add(Channel(id = id, name = name, slug = match.groups[2]!!.value, url = href))
+                }
+            }
+        }
+        return channels
+    }
+
+    // ─── Main Page ──────────────────────────────────────────────────────────
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val sections = mutableListOf<HomePageList>()
 
         if (page == 1) {
-            val featured = try {
-                val json = apiGet("/featured?page=1")
-                val resp = tryParseJson<ApiSearchResponse>(json)
-                resp?.items?.map { it.toSearchResponse(this) } ?: emptyList()
-            } catch (e: Exception) { emptyList() }
-            if (featured.isNotEmpty()) sections.add(HomePageList("Featured", featured))
+            try {
+                val html = getHtml("/featured/")
+                val items = parseListingPage(html)
+                if (items.isNotEmpty()) sections.add(HomePageList("Featured", items.map { it.toSearchResponse(this) }))
+            } catch (_: Exception) {}
 
-            val latestVideos = try {
-                val json = apiGet("/latest?page=1&type=videos")
-                val resp = tryParseJson<ApiSearchResponse>(json)
-                resp?.items?.map { it.toSearchResponse(this) } ?: emptyList()
-            } catch (e: Exception) { emptyList() }
-            if (latestVideos.isNotEmpty()) sections.add(HomePageList("Latest Videos", latestVideos))
+            try {
+                val html = getHtml("/videos/")
+                val items = parseListingPage(html)
+                if (items.isNotEmpty()) sections.add(HomePageList("Latest Videos", items.map { it.toSearchResponse(this) }))
+            } catch (_: Exception) {}
 
-            val topRated = try {
-                val json = apiGet("/top-rated/?page=1")
-                val resp = tryParseJson<ApiSearchResponse>(json)
-                resp?.items?.map { it.toSearchResponse(this) } ?: emptyList()
-            } catch (e: Exception) { emptyList() }
-            if (topRated.isNotEmpty()) sections.add(HomePageList("Top Rated", topRated))
+            try {
+                val html = getHtml("/top-rated/")
+                val items = parseListingPage(html)
+                if (items.isNotEmpty()) sections.add(HomePageList("Top Rated", items.map { it.toSearchResponse(this) }))
+            } catch (_: Exception) {}
 
-            val mostViewed = try {
-                val json = apiGet("/most-viewed/?page=1")
-                val resp = tryParseJson<ApiSearchResponse>(json)
-                resp?.items?.map { it.toSearchResponse(this) } ?: emptyList()
-            } catch (e: Exception) { emptyList() }
-            if (mostViewed.isNotEmpty()) sections.add(HomePageList("Most Viewed", mostViewed))
+            try {
+                val html = getHtml("/most-viewed/")
+                val items = parseListingPage(html)
+                if (items.isNotEmpty()) sections.add(HomePageList("Most Viewed", items.map { it.toSearchResponse(this) }))
+            } catch (_: Exception) {}
 
-            val latestGalleries = try {
-                val json = apiGet("/latest?page=1&type=photos")
-                val resp = tryParseJson<ApiSearchResponse>(json)
-                resp?.items?.map { it.toSearchResponse(this) } ?: emptyList()
-            } catch (e: Exception) { emptyList() }
-            if (latestGalleries.isNotEmpty()) sections.add(HomePageList("Latest Galleries", latestGalleries))
+            try {
+                val html = getHtml("/photos/")
+                val items = parseListingPage(html)
+                if (items.isNotEmpty()) sections.add(HomePageList("Latest Galleries", items.map { it.toSearchResponse(this) }))
+            } catch (_: Exception) {}
 
-            val channels = getChannels()
-            if (channels.isNotEmpty()) {
-                val channelItems = channels.map { channel ->
-                    newMovieSearchResponse(
-                        channel.name,
-                        "${mainUrl}/category/${channel.id}?page=1",
-                        TvType.Others
-                    ) { posterUrl = null }
+            try {
+                val channelsHtml = getHtml("/channels/")
+                val channels = parseChannels(channelsHtml)
+                if (channels.isNotEmpty()) {
+                    val channelItems = channels.map { channel ->
+                        newMovieSearchResponse(
+                            channel.name,
+                            "$mainUrl/category/${channel.id}?page=1",
+                            TvType.Others
+                        )
+                    }
+                    sections.add(HomePageList("Categories", channelItems, true))
                 }
-                sections.add(HomePageList("Categories", channelItems, true))
-            }
+            } catch (_: Exception) {}
         } else {
-            val latest = try {
-                val json = apiGet("/latest?page=$page&type=videos")
-                val resp = tryParseJson<ApiSearchResponse>(json)
-                resp?.items?.map { it.toSearchResponse(this) } ?: emptyList()
-            } catch (e: Exception) { emptyList() }
-            if (latest.isNotEmpty()) sections.add(HomePageList("Latest Videos", latest))
+            try {
+                val html = getHtml("/videos/page$page.html")
+                val items = parseListingPage(html)
+                if (items.isNotEmpty()) sections.add(HomePageList("Latest Videos", items.map { it.toSearchResponse(this) }))
+            } catch (_: Exception) {}
         }
 
         return newHomePageResponse(sections)
     }
 
-    override suspend fun search(query: String, page: Int): SearchResponseList? {
-        val json = apiGet("/search?q=${query.encodeUri()}&type=videos&page=$page")
-        val resp = tryParseJson<ApiSearchResponse>(json) ?: return null
-        if (!resp.success) return null
-        return resp.items?.map { it.toSearchResponse(this) }?.toNewSearchResponseList()
-    }
+    // ─── Search ──────────────────────────────────────────────────────────────
 
-    override suspend fun load(url: String): LoadResponse? {
-        if (url.contains("/category/")) {
+    override suspend fun search(query: String, page: Int): SearchResponseList? {
+        try {
+            val html = getHtml("/searchgatev2.php?mode=search&type=videos&q=${query.encodeUri()}&page$page.html")
+            val items = parseListingPage(html)
+            return items.map { it.toSearchResponse(this) }.toNewSearchResponseList()
+        } catch (e: Exception) {
             return null
         }
+    }
+
+    // ─── Load ────────────────────────────────────────────────────────────────
+
+    override suspend fun load(url: String): LoadResponse? {
+        if (url.contains("/category/")) return null
 
         val isGallery = url.contains("/gallery/")
-        val id = url.substringAfterLast("/").trimEnd('/')
-        if (id.isBlank() || !id.all { it.isDigit() }) return null
+        val id = url.substringAfterLast("/").trimEnd('/').toIntOrNull() ?: return null
 
-        return if (isGallery) loadGallery(id.toInt(), url)
-        else loadVideo(id.toInt(), url)
+        return if (isGallery) loadGallery(id, url) else loadVideo(id, url)
     }
 
     private suspend fun loadVideo(videoId: Int, url: String): LoadResponse? {
-        val json = apiGet("/video/$videoId")
-        val detail = tryParseJson<ApiVideoDetail>(json) ?: return null
-        if (!detail.success) return null
-        if (detail.videoUrl == null) return null
+        val link = findItemLink(videoId, "/searchgatev2.php?mode=search&type=videos&q=$videoId")
+        if (link.isNullOrEmpty()) return null
+
+        val html = getHtml(link)
+        val detail = parseVideoDetail(html, videoId) ?: return null
+        if (detail.videoUrl.isNullOrEmpty()) return null
 
         return newMovieLoadResponse(
-            detail.title?.ifEmpty { "Video #$videoId" } ?: "Video #$videoId",
+            detail.title.ifEmpty { "Video #$videoId" },
             url,
             TvType.Others,
-            listOf(detail.videoUrl)
+            listOfNotNull(detail.videoUrl)
         ) {
             posterUrl = detail.thumbnail
             plot = buildString {
-                detail.description?.takeIf { it.isNotBlank() }?.let { append("$it\n") }
-                detail.categories?.mapNotNull { it["name"] as? String }?.joinToString(", ")?.let {
-                    append("Categories: $it\n")
-                }
-                detail.uploader?.let { append("Uploader: ${it["username"]}\n") }
+                detail.description.takeIf { it.isNotEmpty() }?.let { append("$it\n") }
+                detail.categories.map { it.name }.takeIf { it.isNotEmpty() }
+                    ?.joinToString(", ")?.let { append("Categories: $it\n") }
+                detail.uploader?.username?.let { append("Uploader: $it\n") }
             }.ifBlank { null }
-            detail.tags?.let { tags = it }
-            detail.date?.let { year = it.takeLast(4).toIntOrNull() }
+            detail.tags.takeIf { it.isNotEmpty() }?.let { tags = it }
+            detail.date?.takeLast(4)?.toIntOrNull()?.let { year = it }
         }
     }
 
     private suspend fun loadGallery(galleryId: Int, url: String): LoadResponse? {
-        val json = apiGet("/gallery/$galleryId")
-        val detail = tryParseJson<ApiGalleryDetail>(json) ?: return null
-        if (!detail.success) return null
+        val link = findItemLink(galleryId, "/searchgatev2.php?mode=search&type=photos&q=$galleryId")
+        if (link.isNullOrEmpty()) return null
 
-        val imageUrls = detail.images ?: emptyList()
+        val html = getHtml(link)
+        val detail = parseGalleryDetail(html, galleryId) ?: return null
+        val imageUrls = detail.images.ifEmpty { return null }
 
         return newMovieLoadResponse(
-            detail.title?.ifEmpty { "Gallery #$galleryId" } ?: "Gallery #$galleryId",
+            detail.title.ifEmpty { "Gallery #$galleryId" },
             url,
             TvType.Others,
             imageUrls
         ) {
-            posterUrl = detail.thumbnails?.firstOrNull()
+            posterUrl = detail.thumbnails.firstOrNull()
             plot = buildString {
-                detail.categories?.mapNotNull { it["name"] as? String }?.joinToString(", ")?.let {
-                    append("Categories: $it\n")
-                }
-                append("${detail.photoCount ?: imageUrls.size} images")
+                detail.categories.map { it.name }.takeIf { it.isNotEmpty() }
+                    ?.joinToString(", ")?.let { append("Categories: $it\n") }
+                append("${detail.photoCount} images")
             }
-            detail.tags?.let { tags = it }
-            detail.date?.let { year = it.takeLast(4).toIntOrNull() }
+            detail.tags.takeIf { it.isNotEmpty() }?.let { tags = it }
+            detail.date?.takeLast(4)?.toIntOrNull()?.let { year = it }
         }
     }
+
+    private suspend fun findItemLink(id: Int, searchPath: String): String? {
+        try {
+            val html = getHtml(searchPath)
+            val doc = Jsoup.parse(html)
+            val link = doc.select(".item-$id a, a[href*=\\-$id.html]").first()?.attr("href")
+            if (!link.isNullOrEmpty()) return link
+        } catch (_: Exception) {}
+
+        try {
+            val html = getHtml(if (searchPath.contains("photos")) "/photos/" else "/videos/")
+            val items = parseListingPage(html)
+            return items.find { it.id == id }?.url
+        } catch (_: Exception) {}
+
+        return null
+    }
+
+    // ─── Load Links ──────────────────────────────────────────────────────────
 
     override suspend fun loadLinks(
         data: String,
@@ -173,38 +559,30 @@ class SheFreakyProvider : MainAPI() {
     ): Boolean {
         val urls = tryParseJson<List<String>>(data) ?: return false
         val isVideo = urls.size == 1
-        urls.forEachIndexed { index, url ->
+        urls.forEachIndexed { index, link ->
             callback(
-                newExtractorLink(name, if (isVideo) "Video" else "Image ${index + 1}", url) {
+                newExtractorLink(name, if (isVideo) "Video" else "Image ${index + 1}", link) {
                     quality = Qualities.Unknown.value
                     referer = ""
                 }
             )
         }
-        return true
+        return urls.isNotEmpty()
     }
 
-    private suspend fun getChannels(): List<ApiChannel> {
-        return try {
-            val json = apiGet("/channels")
-            val resp = tryParseJson<ApiChannelsResponse>(json)
-            resp?.channels ?: emptyList()
-        } catch (e: Exception) { emptyList() }
-    }
+    // ─── Data Classes ────────────────────────────────────────────────────────
 
-    // ---- Data Classes ----
-
-    private data class ApiListItem(
+    private data class ListItem(
         val id: Int,
         val slug: String,
         val title: String,
-        val type: String?,
+        val type: String,
         val thumbnail: String?,
-        @JsonProperty("previewUrl") val previewUrl: String?,
+        val previewUrl: String?,
         val duration: String?,
         val views: String?,
+        val photoCount: Int?,
         val url: String,
-        @JsonProperty("photoCount") val photoCount: Int?
     ) {
         fun toSearchResponse(provider: SheFreakyProvider): SearchResponse {
             val posterFix = when {
@@ -213,7 +591,7 @@ class SheFreakyProvider : MainAPI() {
                 else -> thumbnail
             }
             return provider.newMovieSearchResponse(
-                title.ifEmpty { "Video #$id" },
+                title.ifEmpty { "Item #$id" },
                 "${provider.mainUrl}/${if (type == "gallery") "gallery" else "video"}/$id",
                 TvType.Others
             ) {
@@ -222,57 +600,52 @@ class SheFreakyProvider : MainAPI() {
         }
     }
 
-    private data class ApiVideoDetail(
-        val success: Boolean,
+    private data class VideoDetail(
         val id: Int,
         val slug: String?,
         val title: String?,
         val description: String?,
         val thumbnail: String?,
-        @JsonProperty("videoUrl") val videoUrl: String?,
+        val videoUrl: String?,
         val duration: String?,
         val views: String?,
         val rating: String?,
         val date: String?,
-        val categories: List<Map<String, Any>>?,
+        val categories: List<CategoryInfo>?,
         val tags: List<String>?,
-        val uploader: Map<String, Any>?,
-        val comments: List<Map<String, Any>>?
+        val uploader: UploaderInfo?,
     )
 
-    private data class ApiGalleryDetail(
-        val success: Boolean,
+    private data class GalleryDetail(
         val id: Int,
         val slug: String?,
         val title: String?,
         val views: String?,
         val date: String?,
-        @JsonProperty("photoCount") val photoCount: Int?,
-        val images: List<String>?,
-        val thumbnails: List<String>?,
-        val categories: List<Map<String, Any>>?,
-        val tags: List<String>?
+        val photoCount: Int,
+        val images: List<String>,
+        val thumbnails: List<String>,
+        val categories: List<CategoryInfo>?,
+        val tags: List<String>?,
     )
 
-    private data class ApiSearchResponse(
-        val success: Boolean,
-        val query: String?,
-        val type: String?,
-        val count: Int?,
-        val items: List<ApiListItem>?,
-        val page: Int?,
-        @JsonProperty("totalPages") val totalPages: Int?
-    )
-
-    private data class ApiChannelsResponse(
-        val success: Boolean,
-        val channels: List<ApiChannel>?
-    )
-
-    private data class ApiChannel(
+    private data class CategoryInfo(
         val id: Int,
         val name: String,
         val slug: String,
-        val url: String
+        val url: String? = null,
+    )
+
+    private data class UploaderInfo(
+        val username: String,
+        val profileUrl: String,
+        val avatar: String?,
+    )
+
+    private data class Channel(
+        val id: Int,
+        val name: String,
+        val slug: String,
+        val url: String,
     )
 }
