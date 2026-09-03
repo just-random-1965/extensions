@@ -1,21 +1,16 @@
 package recloudstream
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.StringUtils.encodeUri
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.jsoup.nodes.Element
-
 
 class SheFreakyProvider : MainAPI() {
     override var mainUrl = "https://www.shesfreaky.com"
@@ -38,7 +33,7 @@ class SheFreakyProvider : MainAPI() {
         return if (url.startsWith("//")) "https:$url" else url
     }
 
-    private suspend fun getHtml(path: String, retries: Int = 2): String {
+    private fun getHtml(path: String, retries: Int = 2): String {
         val url = "$mainUrl/${path.removePrefix("/")}"
         var lastErr: Exception? = null
         for (attempt in 0..retries) {
@@ -50,7 +45,7 @@ class SheFreakyProvider : MainAPI() {
                     .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                     .get()
                     .build()
-                val resp = withContext(Dispatchers.IO) { httpClient.newCall(req).execute() }
+                val resp = httpClient.newCall(req).execute()
                 if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
                 val body = resp.body?.string() ?: throw Exception("Empty body")
                 resp.closeSilently()
@@ -62,8 +57,6 @@ class SheFreakyProvider : MainAPI() {
         }
         throw lastErr ?: Exception("Unknown error")
     }
-
-    // ─── Parsing Helpers ─────────────────────────────────────────────────────
 
     private fun parseListItem(el: Element): ListItem? {
         val link = el.select("a").first() ?: return null
@@ -84,20 +77,20 @@ class SheFreakyProvider : MainAPI() {
 
         val thumbRaw = el.select(".thumb img, img").first()
             ?.attr("src")
-            ?.takeIf { it.isNotEmpty() }
+            ?.takeIf { !it.isNullOrEmpty() }
             ?: el.select(".thumb img").first()?.attr("data-src")
-            ?.takeIf { it.isNotEmpty() }
+            ?.takeIf { !it.isNullOrEmpty() }
         val thumbnail = thumbRaw?.let { normalizeUrl(it) }
 
         val previewUrl = el.select("[data-preview]").first()?.attr("data-preview")
-            ?.takeIf { it.isNotEmpty() }
+            ?.takeIf { !it.isNullOrEmpty() }
 
         val duration = el.select(".thumb-length, .video-duration, .duration").first()?.text()?.trim()
         val views = el.select(".video-views, .thumb-views, [class*=views]").first()?.text()?.trim()
 
         val photoCountText = el.select(".thumb-count, .photo-count").first()?.text()?.trim()
-        val photoCountMatch = photoCountText?.let { Regex("(\\d+)").find(it) }
-        val photoCount = photoCountMatch?.groups?.get(1)?.value?.toIntOrNull()
+        val photoCount = photoCountText?.let { Regex("(\\d+)").find(it) }
+            ?.groups?.get(1)?.value?.toIntOrNull()
 
         return ListItem(
             id = id,
@@ -125,26 +118,6 @@ class SheFreakyProvider : MainAPI() {
         return items
     }
 
-    private fun parseTotalPages(html: String): Int {
-        val doc = Jsoup.parse(html)
-        var maxPage = 1
-        doc.select(".pagination a, .page-nav a, .pages a, a[href*=page]").forEach { el ->
-            val href = el.attr("href").trim()
-            val match = Regex("page(\\d+)\\.html").find(href)
-            if (match != null) {
-                val num = match.groups[1]!!.value.toIntOrNull()
-                if (num != null && num > maxPage) maxPage = num
-            }
-            val text = el.text().trim()
-            val textMatch = Regex("(\\d+)").find(text)
-            if (textMatch != null) {
-                val num = textMatch.groups[1]!!.value.toIntOrNull()
-                if (num != null && num > maxPage) maxPage = num
-            }
-        }
-        return maxPage
-    }
-
     private fun parseVideoDetail(html: String, id: Int): VideoDetail? {
         val doc = Jsoup.parse(html)
 
@@ -163,7 +136,6 @@ class SheFreakyProvider : MainAPI() {
             }
         }
 
-        // Extract video URL
         var videoUrl: String? = doc.select("video#video-id source[src], video source[src], video[src]").first()?.attr("src")
         if (videoUrl.isNullOrEmpty()) {
             videoUrl = doc.select("[data-preview]").first()?.attr("data-preview")
@@ -179,7 +151,6 @@ class SheFreakyProvider : MainAPI() {
             }
         }
 
-        // Extract thumbnail
         var thumbnail: String? = doc.select("video#video-id, video").first()?.attr("poster")
             ?: doc.select("meta[property=og:image]").first()?.attr("content")
         if (thumbnail.isNullOrEmpty()) {
@@ -218,7 +189,8 @@ class SheFreakyProvider : MainAPI() {
         val rating = doc.select(".video-rating, .rating").first()?.text()?.trim()
             ?: doc.select("#rating-thumbs .btn-success").first()?.text()?.trim()
 
-        val description = Regex("Description:\\s*([^<]+)").find(contentText)?.groups?.get(1)?.value?.trim()
+        val description = Regex("Description:\\s*([^<]+)").find(contentText)
+            ?.groups?.get(1)?.value?.trim()
             ?: doc.select(".description, .video-description, .entry-content").first()?.text()?.trim()
             ?: ""
 
@@ -245,16 +217,19 @@ class SheFreakyProvider : MainAPI() {
             }
         }
 
-        val uploader: UploaderInfo?
         val uploaderLink = doc.select(".uploader a, .profile a, .member a, a.redlinks[href*=profile]").first()
         val uploaderImg = doc.select(".uploader img, .profile img, .member img").first()
-        uploader = if (uploaderLink != null) {
-            UploaderInfo(
+        val uploader: UploaderInfo?
+        if (uploaderLink != null) {
+            val avatarSrc = uploaderImg?.attr("src")
+            uploader = UploaderInfo(
                 username = uploaderLink.text().trim(),
                 profileUrl = uploaderLink.attr("href").trim(),
-                avatar = uploaderImg?.attr("src").takeIf { it.isNotEmpty() },
+                avatar = if (!avatarSrc.isNullOrEmpty()) normalizeUrl(avatarSrc) else null,
             )
-        } else null
+        } else {
+            uploader = null
+        }
 
         return VideoDetail(
             id = id,
@@ -305,12 +280,14 @@ class SheFreakyProvider : MainAPI() {
 
         if (images.isEmpty()) {
             doc.select("#gallery-container img[src*=galleries], img[src*=galleries]").forEach { el ->
-                val src = el.attr("src").takeIf { it.isNotEmpty() } ?: el.attr("data-src") ?: return@forEach
+                val src = el.attr("src").takeIf { !it.isNullOrEmpty() }
+                    ?: el.attr("data-src").takeIf { !it.isNullOrEmpty() }
+                    ?: return@forEach
                 if (src.contains("/galleries/") && !src.contains("/thumbs/")) {
                     images.add(normalizeUrl(src))
                 }
                 val thumb = el.attr("src")
-                if (thumb.isNotEmpty() && thumb.contains("/galleries/") && thumb.contains("/thumbs/")) {
+                if (!thumb.isNullOrEmpty() && thumb.contains("/galleries/") && thumb.contains("/thumbs/")) {
                     thumbnails.add(normalizeUrl(thumb))
                 }
             }
@@ -324,8 +301,8 @@ class SheFreakyProvider : MainAPI() {
         val uniqueThumbnails = thumbnails.distinct()
 
         val photoCountText = doc.select(".thumb-count, .photo-count, .gallery-count").first()?.text()?.trim()
-        val countMatch = photoCountText?.let { Regex("(\\d+)").find(it) }
-        val photoCount = countMatch?.groups?.get(1)?.value?.toIntOrNull() ?: uniqueImages.size
+        val photoCount = photoCountText?.let { Regex("(\\d+)").find(it) }
+            ?.groups?.get(1)?.value?.toIntOrNull() ?: uniqueImages.size
 
         var views = doc.select(".video-views, .thumb-views, [class*=views]").first()?.text()?.trim()
         var date = doc.select(".video-date, .gallery-date, .date, .post-date").first()?.text()?.trim()
@@ -397,8 +374,6 @@ class SheFreakyProvider : MainAPI() {
         return channels
     }
 
-    // ─── Main Page ──────────────────────────────────────────────────────────
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val sections = mutableListOf<HomePageList>()
 
@@ -458,19 +433,15 @@ class SheFreakyProvider : MainAPI() {
         return newHomePageResponse(sections)
     }
 
-    // ─── Search ──────────────────────────────────────────────────────────────
-
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         try {
-            val html = getHtml("/searchgatev2.php?mode=search&type=videos&q=${query.encodeUri()}&page$page.html")
+            val html = getHtml("/searchgatev2.php?mode=search&type=videos&q=${query}&page${page}.html")
             val items = parseListingPage(html)
             return items.map { it.toSearchResponse(this) }.toNewSearchResponseList()
         } catch (e: Exception) {
             return null
         }
     }
-
-    // ─── Load ────────────────────────────────────────────────────────────────
 
     override suspend fun load(url: String): LoadResponse? {
         if (url.contains("/category/")) return null
@@ -489,20 +460,24 @@ class SheFreakyProvider : MainAPI() {
         val detail = parseVideoDetail(html, videoId) ?: return null
         if (detail.videoUrl.isNullOrEmpty()) return null
 
+        val displayTitle = if (detail.title.isNullOrEmpty()) "Video #$videoId" else detail.title!!
+
         return newMovieLoadResponse(
-            detail.title.ifEmpty { "Video #$videoId" },
+            displayTitle,
             url,
             TvType.Others,
             listOfNotNull(detail.videoUrl)
         ) {
             posterUrl = detail.thumbnail
             plot = buildString {
-                detail.description.takeIf { it.isNotEmpty() }?.let { append("$it\n") }
-                detail.categories.map { it.name }.takeIf { it.isNotEmpty() }
-                    ?.joinToString(", ")?.let { append("Categories: $it\n") }
+                if (!detail.description.isNullOrEmpty()) append("${detail.description}\n")
+                if (!detail.categories.isNullOrEmpty()) {
+                    val catNames = detail.categories!!.map { it.name }.joinToString(", ")
+                    append("Categories: $catNames\n")
+                }
                 detail.uploader?.username?.let { append("Uploader: $it\n") }
             }.ifBlank { null }
-            detail.tags.takeIf { it.isNotEmpty() }?.let { tags = it }
+            if (!detail.tags.isNullOrEmpty()) tags = detail.tags
             detail.date?.takeLast(4)?.toIntOrNull()?.let { year = it }
         }
     }
@@ -513,26 +488,30 @@ class SheFreakyProvider : MainAPI() {
 
         val html = getHtml(link)
         val detail = parseGalleryDetail(html, galleryId) ?: return null
-        val imageUrls = detail.images.ifEmpty { return null }
+        if (detail.images.isEmpty()) return null
+
+        val displayTitle = if (detail.title.isNullOrEmpty()) "Gallery #$galleryId" else detail.title!!
 
         return newMovieLoadResponse(
-            detail.title.ifEmpty { "Gallery #$galleryId" },
+            displayTitle,
             url,
             TvType.Others,
-            imageUrls
+            detail.images
         ) {
             posterUrl = detail.thumbnails.firstOrNull()
             plot = buildString {
-                detail.categories.map { it.name }.takeIf { it.isNotEmpty() }
-                    ?.joinToString(", ")?.let { append("Categories: $it\n") }
+                if (!detail.categories.isNullOrEmpty()) {
+                    val catNames = detail.categories!!.map { it.name }.joinToString(", ")
+                    append("Categories: $catNames\n")
+                }
                 append("${detail.photoCount} images")
             }
-            detail.tags.takeIf { it.isNotEmpty() }?.let { tags = it }
+            if (!detail.tags.isNullOrEmpty()) tags = detail.tags
             detail.date?.takeLast(4)?.toIntOrNull()?.let { year = it }
         }
     }
 
-    private suspend fun findItemLink(id: Int, searchPath: String): String? {
+    private fun findItemLink(id: Int, searchPath: String): String? {
         try {
             val html = getHtml(searchPath)
             val doc = Jsoup.parse(html)
@@ -548,8 +527,6 @@ class SheFreakyProvider : MainAPI() {
 
         return null
     }
-
-    // ─── Load Links ──────────────────────────────────────────────────────────
 
     override suspend fun loadLinks(
         data: String,
@@ -569,8 +546,6 @@ class SheFreakyProvider : MainAPI() {
         }
         return urls.isNotEmpty()
     }
-
-    // ─── Data Classes ────────────────────────────────────────────────────────
 
     private data class ListItem(
         val id: Int,
@@ -611,8 +586,8 @@ class SheFreakyProvider : MainAPI() {
         val views: String?,
         val rating: String?,
         val date: String?,
-        val categories: List<CategoryInfo>?,
-        val tags: List<String>?,
+        val categories: List<CategoryInfo>,
+        val tags: List<String>,
         val uploader: UploaderInfo?,
     )
 
@@ -625,8 +600,8 @@ class SheFreakyProvider : MainAPI() {
         val photoCount: Int,
         val images: List<String>,
         val thumbnails: List<String>,
-        val categories: List<CategoryInfo>?,
-        val tags: List<String>?,
+        val categories: List<CategoryInfo>,
+        val tags: List<String>,
     )
 
     private data class CategoryInfo(

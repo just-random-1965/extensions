@@ -5,15 +5,11 @@ import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.StringUtils.encodeUri
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Element
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 class NaijaTapeProvider : MainAPI() {
     override var mainUrl = "https://www.naijatape.com"
@@ -31,7 +27,7 @@ class NaijaTapeProvider : MainAPI() {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    private suspend fun getHtml(path: String, retries: Int = 2): String {
+    private fun getHtml(path: String, retries: Int = 2): String {
         val url = "$mainUrl/${path.removePrefix("/")}"
         var lastErr: Exception? = null
         for (attempt in 0..retries) {
@@ -43,7 +39,7 @@ class NaijaTapeProvider : MainAPI() {
                     .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                     .get()
                     .build()
-                val resp = withContext(Dispatchers.IO) { httpClient.newCall(req).execute() }
+                val resp = httpClient.newCall(req).execute()
                 if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
                 val body = resp.body?.string() ?: throw Exception("Empty body")
                 resp.closeSilently()
@@ -90,19 +86,6 @@ class NaijaTapeProvider : MainAPI() {
         return cards
     }
 
-    private fun parsePagination(html: String): Pair<Int, Int> {
-        val doc = Jsoup.parse(html)
-        var maxPage = 1
-        doc.select(".pagination a, .nav-links a, .page-numbers:not(.next):not(.prev)").forEach { el ->
-            val text = el.text().trim()
-            val num = text.toIntOrNull()
-            if (num != null && num > maxPage) maxPage = num
-        }
-        val current = doc.select(".page-numbers.current").first()
-        val page = current?.text()?.trim()?.toIntOrNull() ?: 1
-        return Pair(page, maxPage)
-    }
-
     private fun parsePostDetail(html: String, slug: String): PostDetail {
         val doc = Jsoup.parse(html)
 
@@ -114,10 +97,8 @@ class NaijaTapeProvider : MainAPI() {
         }
 
         val thumbEl = doc.select("meta[property=og:image], .wp-post-image").first()
-        val thumbnail = if (thumbEl?.tagName() == "meta") {
-            thumbEl.attr("content").takeIf { it.isNotEmpty() }
-        } else {
-            thumbEl?.attr("src").takeIf { it.isNotEmpty() }
+        val thumbnail = if (titleEl?.tagName() == "meta") null else {
+            thumbEl?.attr("src").takeIf { it != null && it.isNotEmpty() }
         }
 
         val dateEl = doc.select("time.entry-date, meta[property=article:published_time], .entry-date").first()
@@ -150,8 +131,8 @@ class NaijaTapeProvider : MainAPI() {
 
         val images = mutableSetOf<String>()
         doc.select(".entry-content img, .post-content img, article img").forEach { el ->
-            val src = el.attr("src").takeIf { it.isNotEmpty() }
-                ?: el.attr("data-src").takeIf { it.isNotEmpty() }
+            val src = el.attr("src").takeIf { !it.isNullOrEmpty() }
+                ?: el.attr("data-src").takeIf { !it.isNullOrEmpty() }
                 ?: return@forEach
             if (src.contains("wp-content/uploads") && !src.endsWith(".mp4")) {
                 images.add(src)
@@ -169,10 +150,6 @@ class NaijaTapeProvider : MainAPI() {
             Regex("category-([\\w-]+)").findAll(articleClass).forEach {
                 val cat = it.groupValues[1].replace("-", " ")
                 if (cat.isNotEmpty() && !categories.contains(cat)) categories.add(cat)
-            }
-            Regex("tag-([\\w-]+)").findAll(articleClass).forEach {
-                val tag = it.groupValues[1].replace("-", " ")
-                if (tag.isNotEmpty()) Unit
             }
         }
 
@@ -249,8 +226,8 @@ class NaijaTapeProvider : MainAPI() {
         ) {
             posterUrl = detail.thumbnail
             plot = buildString {
-                detail.categories.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { append("Categories: $it\n") }
-                detail.tags.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { append("Tags: $it") }
+                if (detail.categories.isNotEmpty()) append("Categories: ${detail.categories.joinToString(", ")}\n")
+                if (detail.tags.isNotEmpty()) append("Tags: ${detail.tags.joinToString(", ")}")
             }.ifBlank { null }
             detail.date?.let { year = extractYear(it) }
             tags = (detail.categories + detail.tags).takeIf { it.isNotEmpty() }
