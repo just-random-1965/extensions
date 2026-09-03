@@ -8,17 +8,11 @@ buildscript {
         google()
         mavenCentral()
         maven("https://jitpack.io")
-        maven("https://maven.pkg.github.com/recloudstream/gradle") {
-            credentials {
-                username = System.getenv("GH_PACKAGE_USER") ?: "recloudstream"
-                password = System.getenv("GH_PACKAGE_TOKEN") ?: System.getenv("GITHUB_TOKEN") ?: ""
-            }
-        }
     }
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("com.lagradost.cloudstream3:gradle:-SNAPSHOT")
+        classpath("com.github.recloudstream:gradle:d28ec3098b")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
@@ -28,12 +22,6 @@ allprojects {
         google()
         mavenCentral()
         maven("https://jitpack.io")
-        maven("https://maven.pkg.github.com/recloudstream/gradle") {
-            credentials {
-                username = System.getenv("GH_PACKAGE_USER") ?: "recloudstream"
-                password = System.getenv("GH_PACKAGE_TOKEN") ?: System.getenv("GITHUB_TOKEN") ?: ""
-            }
-        }
     }
 }
 
